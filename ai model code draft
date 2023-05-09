@@ -1,0 +1,66 @@
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+import os
+
+# Set secure location to store data and models
+data_dir = "/path/to/secure/data/directory"
+model_dir = "/path/to/secure/model/directory"
+
+# Load the dataset
+(x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
+
+# Preprocess the data
+x_train = x_train.reshape((60000, 28, 28, 1))
+x_test = x_test.reshape((10000, 28, 28, 1))
+x_train = x_train / 255.0
+x_test = x_test / 255.0
+
+# Data augmentation
+datagen = ImageDataGenerator(rotation_range=10, width_shift_range=0.1, height_shift_range=0.1)
+datagen.fit(x_train)
+
+# Define the model
+inputs = keras.Input(shape=(28, 28, 1))
+x = keras.layers.Conv2D(32, (3,3), activation='relu')(inputs)
+x = keras.layers.MaxPooling2D((2,2))(x)
+x = keras.layers.Conv2D(64, (3,3), activation='relu')(x)
+x = keras.layers.MaxPooling2D((2,2))(x)
+x = keras.layers.Flatten()(x)
+x = keras.layers.Dense(128, activation='relu')(x)
+outputs = keras.layers.Dense(10, activation='softmax')(x)
+model = keras.Model(inputs=inputs, outputs=outputs)
+
+# Compile the model
+optimizer = keras.optimizers.Adam(lr=0.001)
+model.compile(optimizer=optimizer,
+              loss='sparse_categorical_crossentropy',
+              metrics=['accuracy'])
+
+# Define callbacks
+early_stopping = keras.callbacks.EarlyStopping(monitor='val_loss', patience=3)
+lr_scheduler = keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=2)
+
+# Train the model with adversarial training
+model_checkpoint = keras.callbacks.ModelCheckpoint(os.path.join(model_dir, 'best_model.h5'), monitor='val_accuracy', save_best_only=True)
+def adversarial_generator(generator, model, batch_size, eps=0.1):
+    for x,y in generator:
+        x_adv = tf.clip_by_value(x + eps*tf.sign(tf.gradients(model.output, model.input)[0]), clip_value_min=0, clip_value_max=1)
+        yield x_adv, y
+
+train_gen = adversarial_generator(datagen.flow(x_train, y_train, batch_size=32), model, batch_size=32)
+val_gen = adversarial_generator(datagen.flow(x_test, y_test, batch_size=32), model, batch_size=32)
+
+history = model.fit_generator(train_gen,
+                              steps_per_epoch=len(x_train) // 32,
+                              epochs=10,
+                              validation_data=val_gen,
+                              validation_steps=len(x_test) // 32,
+                              callbacks=[early_stopping, lr_scheduler, model_checkpoint])
+
+# Save the model
+model.save(os.path.join(model_dir, 'final_model.h5'))
+
+# Evaluate the final model on the test set
+test_loss, test_acc = model.evaluate(x_test, y_test, verbose=2)
+print("Final test accuracy:", test_acc)
